@@ -1,0 +1,19 @@
+[Unit]
+Description=REDO Privacy Mixer Backend API
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/pool.resistance.dog/backend
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=10
+StandardOutput=syslog
+StandardError=syslog
+SyslogIdentifier=redo-mixer
+Environment=NODE_ENV=production
+EnvironmentFile=/var/www/pool.resistance.dog/backend/.env
+
+[Install]
+WantedBy=multi-user.target

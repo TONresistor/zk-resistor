@@ -1,0 +1,22 @@
+{
+  "name": "redo-mixer-backend",
+  "version": "1.0.0",
+  "description": "REDO Privacy Mixer Backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@orbs-network/ton-access": "^2.3.3",
+    "@ton/core": "^0.56.0",
+    "@ton/crypto": "^3.2.0",
+    "@ton/ton": "^13.9.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^5.2.1",
+    "ffjavascript": "^0.3.1",
+    "poseidon-bls12381": "^1.0.2",
+    "snarkjs": "^0.7.5"
+  }
+}
