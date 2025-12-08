@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ZK Resistor</title>
+
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+    <!-- Favicon -->
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg viewBox='0 0 56 56' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M28 56C43.464 56 56 43.464 56 28C56 12.536 43.464 0 28 0C12.536 0 0 12.536 0 28C0 43.464 12.536 56 28 56Z' fill='%230098EA'/%3E%3Cpath d='M37.5603 15.6277H18.4386C14.9228 15.6277 12.6944 19.4202 14.4632 22.4861L26.2644 42.9409C27.0345 44.2765 28.9644 44.2765 29.7345 42.9409L41.5381 22.4861C43.3045 19.4251 41.0761 15.6277 37.5627 15.6277H37.5603ZM26.2548 36.8068L23.6847 31.8327L17.4833 20.7414C17.0742 20.0315 17.5795 19.1218 18.4362 19.1218H26.2524V36.8092L26.2548 36.8068ZM38.5108 20.739L32.3118 31.8351L29.7417 36.8068V19.1194H37.5579C38.4146 19.1194 38.9199 20.0291 38.5108 20.739Z' fill='white'/%3E%3C/svg%3E">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="/style.css">
+
+    <!-- External Libraries -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    <script src="https://unpkg.com/@tonconnect/ui@2.0.6/dist/tonconnect-ui.min.js" integrity="sha384-IX9W8nA7QiZ5Le1mKAIzL2u/gKutPJFpEzmzJI/pxQPW1WsbPyMwX7RurjdXsFW1" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/tonweb@0.0.66/dist/tonweb.js" integrity="sha384-KZ9iM9JqTC8JCLaVPv/PkC5yCO2FJ4qykQ6jhXY565xW86rtPEZgqcLfEWMtqQmT" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/snarkjs@0.7.5/build/snarkjs.min.js" integrity="sha384-5C3lIE3PUFoPsYZ/bNSvfCiuptqUGqsf0RKUh9iAW3S7c62I3SUONh+JcJ7Bfcir" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/@lottiefiles/lottie-player@latest/dist/lottie-player.js"></script>
+
+    <!-- App Scripts -->
+    <script src="/poseidon-bls12381.js"></script>
+    <script src="/app.js" defer></script>
+</head>
+<body>
+    <!-- Header -->
+    <header class="header">
+        <div class="logo">
+            <div class="logo-icon">
+                <lottie-player
+                    src="/resistance.json"
+                    background="transparent"
+                    speed="1"
+                    style="width: 100%; height: 100%;"
+                    loop
+                    autoplay>
+                </lottie-player>
+            </div>
+            <span><span class="logo-text">ZK</span> RESISTOR</span>
+        </div>
+        <div id="ton-connect-button"></div>
+    </header>
+
+    <!-- Main Content -->
+    <div class="container">
+        <!-- Beta Notice -->
+        <div class="beta-notice" id="beta-notice">
+            <button class="beta-close" onclick="closeBetaNotice()" aria-label="Close">&times;</button>
+            <span class="beta-badge">v1 BETA</span>
+            <p class="beta-desc">This is a V1 public beta of a Trustless ZK Privacy Protocol on TON. Single <strong>100 REDO</strong> pool, depth 10 (1024 deposits max). Larger pools with greater depth will be available later.</p>
+        </div>
+
+        <!-- Tabs -->
+        <div class="tabs">
+            <button class="tab active" onclick="showTab('deposit')">Deposit</button>
+            <button class="tab" onclick="showTab('withdraw')">Withdraw</button>
+        </div>
+
+        <!-- Pool Selector -->
+        <div class="pool-selector">
+            <button class="pool-pill active">100 REDO</button>
+            <button class="pool-pill disabled" onclick="showComingSoon()">1K REDO</button>
+            <button class="pool-pill disabled" onclick="showComingSoon()">10K REDO</button>
+        </div>
+
+        <!-- Deposit Panel -->
+        <div id="deposit-panel" class="panel active">
+            <div class="info-box">
+                <div class="info-row">
+                    <span class="info-label">Pool Balance</span>
+                    <span class="info-value" id="pool-balance">Loading...</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Pool Capacity</span>
+                    <span class="info-value" id="pool-deposits">Loading...</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Protocol Fee</span>
+                    <span class="info-value">0.1 TON</span>
+                </div>
+                <div class="info-row">
+                    <span class="info-label">Contract</span>
+                    <span class="info-value contract-value">
+                        <span id="contract-short">EQBU...1KF</span>
+                        <button class="icon-btn" onclick="copyContract()" title="Copy address">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+                                <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+                            </svg>
+                        </button>
+                        <a href="https://tonviewer.com/EQBUH-7pbBjvVKXe7FjPnCSIJ2vvUedfJmjoWdKfLYMC_1KF" target="_blank" rel="noopener" class="icon-btn" title="View on Tonviewer">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                                <polyline points="15 3 21 3 21 9"></polyline>
+                                <line x1="10" y1="14" x2="21" y2="3"></line>
+                            </svg>
+                        </a>
+                    </span>
+                </div>
+            </div>
+
+            <div id="deposit-connect" class="connect-prompt">
+                <p>Connect wallet to deposit</p>
+            </div>
+
+            <div id="deposit-step-1" class="hidden">
+                <button class="btn btn-primary" onclick="generateNote()">
+                    Generate Secret
+                </button>
+            </div>
+
+            <div id="deposit-step-2" class="hidden">
+                <div class="warning">
+                    Save this secret. You need it to withdraw. Lost = lost funds.
+                </div>
+                <div class="note-display" id="note-display"></div>
+                <button class="btn btn-secondary" onclick="copyNote()">Copy Secret</button>
+                <div class="deposit-cost">
+                    <span class="cost-label">Total cost:</span>
+                    <span class="cost-value">100 REDO + 0.1 TON + gas</span>
+                </div>
+                <button class="btn btn-primary" onclick="sendDeposit()">Deposit 100 REDO</button>
+            </div>
+
+            <div id="deposit-step-3" class="hidden">
+                <div class="progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="deposit-progress-fill" style="width: 0%"></div>
+                    </div>
+                    <p class="progress-text" id="deposit-progress-text">Processing...</p>
+                </div>
+            </div>
+
+            <div id="deposit-status"></div>
+        </div>
+
+        <!-- Withdraw Panel -->
+        <div id="withdraw-panel" class="panel">
+            <div id="withdraw-connect" class="connect-prompt hidden">
+                <p>Connect wallet to withdraw</p>
+            </div>
+
+            <div id="withdraw-step-1">
+                <label>Secret</label>
+                <textarea id="note-input" placeholder="redo-xxxx..."></textarea>
+
+                <label>Recipient (optional)</label>
+                <input type="text" id="recipient-input" placeholder="Leave empty for connected wallet">
+
+                <button class="btn btn-primary" onclick="startWithdraw()">
+                    Generate Proof & Withdraw
+                </button>
+            </div>
+
+            <div id="withdraw-progress" class="hidden">
+                <div class="progress">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <p class="progress-text" id="progress-text">Initializing...</p>
+                </div>
+            </div>
+
+            <div id="withdraw-status"></div>
+        </div>
+    </div>
+
+    <!-- Footer -->
+    <footer>
+        <div class="footer-content">
+            <div class="footer-item">
+                <div class="footer-logo">
+                    <svg viewBox="0 0 56 56" fill="none">
+                        <path d="M28 56C43.464 56 56 43.464 56 28C56 12.536 43.464 0 28 0C12.536 0 0 12.536 0 28C0 43.464 12.536 56 28 56Z" fill="#0098EA"/>
+                        <path d="M37.5603 15.6277H18.4386C14.9228 15.6277 12.6944 19.4202 14.4632 22.4861L26.2644 42.9409C27.0345 44.2765 28.9644 44.2765 29.7345 42.9409L41.5381 22.4861C43.3045 19.4251 41.0761 15.6277 37.5627 15.6277H37.5603ZM26.2548 36.8068L23.6847 31.8327L17.4833 20.7414C17.0742 20.0315 17.5795 19.1218 18.4362 19.1218H26.2524V36.8092L26.2548 36.8068ZM38.5108 20.739L32.3118 31.8351L29.7417 36.8068V19.1194H37.5579C38.4146 19.1194 38.9199 20.0291 38.5108 20.739Z" fill="white"/>
+                    </svg>
+                </div>
+                <span>Built on TON</span>
+            </div>
+
+            <a href="https://t.me/zkproof" target="_blank" rel="noopener noreferrer" class="footer-item link">
+                <div class="footer-logo">
+                    <svg viewBox="0 0 24 24" fill="none">
+                        <circle cx="12" cy="12" r="12" fill="#0088cc"/>
+                        <path d="M5.491 11.74l11.57-4.461c.537-.194 1.006.131.832.943l.001-.001-1.97 9.281c-.146.658-.537.818-1.084.508l-3-2.211-1.447 1.394c-.16.16-.295.295-.605.295l.213-3.053 5.56-5.023c.242-.213-.054-.333-.373-.121l-6.871 4.326-2.962-.924c-.643-.204-.657-.643.136-.953z" fill="white"/>
+                    </svg>
+                </div>
+                <span>@ZKproof</span>
+            </a>
+        </div>
+    </footer>
+</body>
+</html>
