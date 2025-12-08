@@ -1,0 +1,435 @@
+#include "imports/stdlib.fc";
+
+;; REDO Privacy Mixer - Main Contract
+;; Uses Poseidon hash with BLS12-381 curve for ZK proofs
+;; IMPORTANT: This contract embeds the verifier logic directly (no external verifier contract)
+
+;; ========== CONSTANTS ==========
+const int MERKLE_TREE_DEPTH = 10;
+const int ROOT_HISTORY_SIZE = 100;
+const int op::transfer_notification = 0x7362d09c;  ;; Jetton transfer notification (TEP-74)
+const int op::deposit = 0x1;  ;; Used in forward_payload
+const int op::withdraw = 0x2;
+const int op::update_root = 0x3;  ;; Admin operation to update Merkle root
+const int op::set_jetton_wallet = 0x4;  ;; Admin operation to set jetton wallet address
+
+;; Event opcodes (for external message logs)
+const int event::deposit = 0xde9051;     ;; Deposit event
+const int event::withdraw = 0x717d3a;    ;; Withdraw event
+
+const int MIN_BALANCE = 100000000;  ;; 0.1 TON - minimum contract balance for operations
+
+const int error::invalid_commitment = 100;
+const int error::tree_full = 101;
+const int error::unknown_root = 102;
+const int error::nullifier_used = 103;
+const int error::verify_failed = 104;
+const int error::invalid_fee = 105;
+const int error::invalid_proof = 106;
+const int error::not_admin = 107;
+const int error::invalid_sender = 108;
+const int error::invalid_amount = 109;
+const int error::already_set = 110;
+const int error::insufficient_gas = 111;
+
+;; ========== STORAGE ==========
+global int next_index;
+global int current_root;
+global cell roots;           ;; Root history (last 100 roots)
+global cell nullifiers;      ;; Spent nullifiers
+global cell commitments;     ;; commitment -> leaf_index mapping
+global slice jetton_wallet;  ;; Mixer's REDO jetton wallet address
+global int deposit_amount;   ;; Fixed deposit amount (100 REDO)
+global slice admin_address;  ;; Admin who can update Poseidon roots
+
+;; ========== STORAGE FUNCTIONS ==========
+
+() load_data() impure inline {
+    slice ds = get_data().begin_parse();
+    next_index = ds~load_uint(32);
+    current_root = ds~load_uint(256);
+    roots = ds~load_dict();
+    nullifiers = ds~load_dict();
+    commitments = ds~load_dict();
+    jetton_wallet = ds~load_msg_addr();
+    deposit_amount = ds~load_coins();
+    admin_address = ds~load_msg_addr();
+}
+
+() save_data() impure inline {
+    set_data(begin_cell()
+        .store_uint(next_index, 32)
+        .store_uint(current_root, 256)
+        .store_dict(roots)
+        .store_dict(nullifiers)
+        .store_dict(commitments)
+        .store_slice(jetton_wallet)
+        .store_coins(deposit_amount)
+        .store_slice(admin_address)
+    .end_cell());
+}
+
+;; ========== LEAF MANAGEMENT ==========
+;; NOTE: Merkle root is computed OFF-CHAIN using Poseidon BLS12-381
+;; The backend indexer calculates the root and calls update_root
+;; This is necessary because TON doesn't have native Poseidon opcode
+
+int insert_leaf(int commitment) impure inline {
+    ;; Check tree capacity (2^MERKLE_TREE_DEPTH leaves max)
+    throw_if(error::tree_full, next_index >= (1 << MERKLE_TREE_DEPTH));
+
+    ;; Store commitment at current index
+    int leaf_index = next_index;
+    next_index += 1;
+
+    ;; Root will be updated by admin/indexer via update_root
+    ;; after computing Poseidon hash off-chain
+
+    return leaf_index;
+}
+
+int is_known_root(int root) inline {
+    if (root == current_root) { return true; }
+
+    int i = 0;
+    repeat (ROOT_HISTORY_SIZE) {
+        (slice rs, int found) = roots.udict_get?(32, i);
+        if (found) {
+            if (rs~load_uint(256) == root) {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    return false;
+}
+
+int is_nullifier_spent(int nullifier_hash) inline {
+    (_, int found) = nullifiers.udict_get?(256, nullifier_hash);
+    return found;
+}
+
+;; ========== GROTH16 VERIFIER (Embedded) ==========
+;; Verifying key constants from verification_key_poseidon.json
+
+int verify_proof(int root, int nullifier_hash, int recipient, int relayer, int fee,
+                 slice proof_a, slice proof_b, slice proof_c) inline {
+
+    ;; Verifying Key constants (BLS12-381 compressed points - BLST format)
+    slice alf1 = begin_cell().store_uint(152544767353937, 48).store_uint(70725210743976, 48).store_uint(122310597987135, 48).store_uint(194581179270147, 48).store_uint(242758246784378, 48).store_uint(196469577709788, 48).store_uint(240556565647666, 48).store_uint(172012361255977, 48).end_cell().begin_parse();
+    slice beta2 = begin_cell().store_uint(51057634616676577507447787295, 96).store_uint(31462386978791472720905056962, 96).store_uint(77419963323068205845130794443, 96).store_uint(31715292576920555986311801123, 96).store_uint(7395747182859248705692445993, 96).store_uint(14411563907901524024811981295, 96).store_uint(75910306344395489319160659892, 96).store_uint(4894677043029934530587312256, 96).end_cell().begin_parse();
+    slice gamma2 = begin_cell().store_uint(45765300665918301128790692768, 96).store_uint(42137484379184671317244818970, 96).store_uint(56280794141317933024253112594, 96).store_uint(6059577009407902906031811454, 96).store_uint(709198854518927808499549479, 96).store_uint(14165060894806320894179293954, 96).store_uint(55805278558791767872231965478, 96).store_uint(52000413785700509085167893944, 96).end_cell().begin_parse();
+    slice delta2 = begin_cell().store_uint(53322290082244612974699559122, 96).store_uint(40376235819295255792387592578, 96).store_uint(6159378330269919335046983181, 96).store_uint(55998488143031436456499665248, 96).store_uint(7324548401424783162284484380, 96).store_uint(14104109331173470952696537498, 96).store_uint(23244467629065829816517703998, 96).store_uint(28218377165968574024004714501, 96).end_cell().begin_parse();
+
+    ;; IC points (6 total: IC0 + 5 public inputs)
+    slice IC0 = begin_cell().store_uint(198017138810121, 48).store_uint(11093099706946, 48).store_uint(168191405341304, 48).store_uint(267822654537616, 48).store_uint(193833566594122, 48).store_uint(270428958703245, 48).store_uint(248395473664306, 48).store_uint(197014181621632, 48).end_cell().begin_parse();
+    slice IC1 = begin_cell().store_uint(190585360627082, 48).store_uint(198728972636691, 48).store_uint(65125162433583, 48).store_uint(267108055363960, 48).store_uint(281456874858038, 48).store_uint(269350594041402, 48).store_uint(115803388723381, 48).store_uint(218302481383977, 48).end_cell().begin_parse();
+    slice IC2 = begin_cell().store_uint(160614952817599, 48).store_uint(161893246286498, 48).store_uint(130783966139273, 48).store_uint(28972656288200, 48).store_uint(253476833639744, 48).store_uint(2764437432715, 48).store_uint(97993827682207, 48).store_uint(11621670388728, 48).end_cell().begin_parse();
+    slice IC3 = begin_cell().store_uint(196462164911970, 48).store_uint(25187752254512, 48).store_uint(127172748065002, 48).store_uint(144364578107866, 48).store_uint(182339905718171, 48).store_uint(121029308358925, 48).store_uint(125535226003063, 48).store_uint(159002180285312, 48).end_cell().begin_parse();
+    slice IC4 = begin_cell().store_uint(144011134253864, 48).store_uint(203790323495402, 48).store_uint(21236265508823, 48).store_uint(94127084284255, 48).store_uint(57256923650132, 48).store_uint(40237061632217, 48).store_uint(277822833618266, 48).store_uint(111282960187862, 48).end_cell().begin_parse();
+    slice IC5 = begin_cell().store_uint(153820963303664, 48).store_uint(10432851524713, 48).store_uint(63558453247040, 48).store_uint(10051986107116, 48).store_uint(253344992874944, 48).store_uint(43159471244965, 48).store_uint(187520531393600, 48).store_uint(41980043226191, 48).end_cell().begin_parse();
+
+    ;; Compute vk_x = IC0 + sum(IC[i] * publicInput[i-1])
+    slice vk_x = IC0;
+    vk_x = bls_g1_add(vk_x, bls_g1_mul(IC1, root));
+    vk_x = bls_g1_add(vk_x, bls_g1_mul(IC2, nullifier_hash));
+    vk_x = bls_g1_add(vk_x, bls_g1_mul(IC3, recipient));
+    vk_x = bls_g1_add(vk_x, bls_g1_mul(IC4, relayer));
+    vk_x = bls_g1_add(vk_x, bls_g1_mul(IC5, fee));
+
+    ;; Pairing check: e(-A, B) * e(alpha, beta) * e(vk_x, gamma) * e(C, delta) == 1
+    slice neg_a = bls_g1_negate(proof_a);
+    return bls_pairing_check(neg_a, proof_b, alf1, beta2, vk_x, gamma2, proof_c, delta2, 4);
+}
+
+;; ========== MAIN LOGIC ==========
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return ();
+    }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    if (flags & 1) {
+        return ();
+    }
+    slice sender_address = cs~load_msg_addr();
+
+    load_data();
+
+    int op = in_msg_body~load_uint(32);
+    int query_id = in_msg_body~load_uint(64);
+
+    ;; ========== SET JETTON WALLET (Admin only, one-time) ==========
+    ;; Called after deploying mixer and sending first REDO to create jetton wallet
+    if (op == op::set_jetton_wallet) {
+        throw_unless(error::not_admin, equal_slice_bits(sender_address, admin_address));
+
+        ;; Only allow if not already set (addr_none = 2 bits: 00)
+        throw_if(error::already_set, jetton_wallet.slice_bits() > 2);
+
+        slice new_jetton_wallet = in_msg_body~load_msg_addr();
+        jetton_wallet = new_jetton_wallet;
+
+        save_data();
+        return ();
+    }
+
+    ;; ========== UPDATE ROOT (Admin only) ==========
+    ;; Called by trusted indexer to update Poseidon Merkle root
+    if (op == op::update_root) {
+        ;; Verify sender is admin
+        throw_unless(error::not_admin, equal_slice_bits(sender_address, admin_address));
+
+        ;; Read new Poseidon root from indexer
+        int new_root = in_msg_body~load_uint(256);
+
+        ;; Store in root history
+        int root_index = next_index % ROOT_HISTORY_SIZE;
+        roots~udict_set(32, root_index, begin_cell().store_uint(new_root, 256).end_cell().begin_parse());
+        current_root = new_root;
+
+        save_data();
+        return ();
+    }
+
+    ;; ========== DEPOSIT (via Jetton Transfer Notification) ==========
+    if (op == op::transfer_notification) {
+        ;; Verify sender is our jetton wallet (security: only accept from our REDO wallet)
+        throw_unless(error::invalid_sender, equal_slice_bits(sender_address, jetton_wallet));
+
+        ;; Parse transfer_notification payload (TEP-74)
+        int amount = in_msg_body~load_coins();
+        slice from_user = in_msg_body~load_msg_addr();
+
+        ;; Verify exact deposit amount (must be exactly 100 REDO)
+        throw_unless(error::invalid_amount, amount == deposit_amount);
+
+        ;; TEP-74: forward_payload is Either Cell ^Cell
+        ;; Bit 0 = inline payload, Bit 1 = payload in ref
+        throw_if(error::invalid_commitment, in_msg_body.slice_bits() < 1);
+        int either_bit = in_msg_body~load_uint(1);
+        ;; For reference mode, verify ref exists then load; otherwise use inline
+        if (either_bit) {
+            throw_if(error::invalid_commitment, in_msg_body.slice_refs_empty?());
+        }
+        slice forward_payload = either_bit
+            ? in_msg_body~load_ref().begin_parse()
+            : in_msg_body;
+
+        ;; Verify payload has enough data (32 + 64 + 256 = 352 bits minimum)
+        throw_if(error::invalid_commitment, forward_payload.slice_bits() < 352);
+
+        ;; Parse forward_payload: op::deposit (32) + query_id (64) + commitment (256)
+        int payload_op = forward_payload~load_uint(32);
+        throw_unless(error::invalid_commitment, payload_op == op::deposit);
+
+        int payload_query_id = forward_payload~load_uint(64);
+        int commitment = forward_payload~load_uint(256);
+
+        ;; Verify commitment not already used
+        (_, int exists) = commitments.udict_get?(256, commitment);
+        throw_if(error::invalid_commitment, exists);
+
+        ;; Insert into Merkle tree
+        int leaf_index = insert_leaf(commitment);
+
+        ;; Mark commitment as used
+        commitments~udict_set(256, commitment, begin_cell().store_uint(leaf_index, 32).end_cell().begin_parse());
+
+        save_data();
+
+        ;; Emit deposit event (external message for indexers)
+        send_raw_message(begin_cell()
+            .store_uint(3, 2)  ;; ext_out_msg_info$11
+            .store_uint(0, 2)  ;; addr_none src
+            .store_uint(0, 2)  ;; addr_none dest
+            .store_uint(0, 64 + 32)  ;; created_lt, created_at (filled by validator)
+            .store_uint(0, 1)  ;; no init
+            .store_uint(1, 1)  ;; body in ref
+            .store_ref(begin_cell()
+                .store_uint(event::deposit, 32)
+                .store_uint(leaf_index, 32)
+                .store_uint(commitment, 256)
+                .store_slice(from_user)
+            .end_cell())
+        .end_cell(), 0);
+
+        ;; Send surplus TON to admin (Network Fee)
+        ;; Contract keeps MIN_BALANCE, sends rest to admin for root sync operations
+        ;; Use mode 64 to carry remaining value after gas fees
+        raw_reserve(MIN_BALANCE, 0);  ;; Reserve MIN_BALANCE in contract
+        send_raw_message(begin_cell()
+            .store_uint(0x10, 6)  ;; nobounce
+            .store_slice(admin_address)
+            .store_coins(0)  ;; Amount ignored with mode 128
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .end_cell(), 128);  ;; mode 128 = send remaining balance after reserve
+
+        return ();
+    }
+
+    ;; ========== WITHDRAW ==========
+    ;; Message structure (to fit within cell limits):
+    ;; MAIN CELL: op(32) + query_id(64) + root(256) + nullifier_hash(256) + 3 refs
+    ;;   REF 1 → public_inputs: recipient_field(256) + relayer_field(256) + fee_field(256)
+    ;;   REF 2 → addresses: recipient_addr + relayer_addr + fee(coins)
+    ;;   REF 3 → proofs: 3 refs (proof_a, proof_b, proof_c)
+    if (op == op::withdraw) {
+        ;; Verify sufficient gas for ZK verification (~0.1 TON needed)
+        throw_unless(error::insufficient_gas, msg_value >= 100000000);
+        ;; Read from main cell
+        int root = in_msg_body~load_uint(256);
+        int nullifier_hash = in_msg_body~load_uint(256);
+
+        ;; Load public inputs from ref 1
+        slice public_inputs = in_msg_body~load_ref().begin_parse();
+        int recipient_field = public_inputs~load_uint(256);
+        int relayer_field = public_inputs~load_uint(256);
+        int fee_field = public_inputs~load_uint(256);
+
+        ;; Load addresses from ref 2
+        slice addresses = in_msg_body~load_ref().begin_parse();
+        slice recipient_addr = addresses~load_msg_addr();
+        slice relayer_addr = addresses~load_msg_addr();
+        int fee = addresses~load_coins();
+
+        ;; Load proofs from ref 3
+        slice proofs_cell = in_msg_body~load_ref().begin_parse();
+        slice proof_a = proofs_cell~load_ref().begin_parse();  ;; G1: 48 bytes (384 bits)
+        slice proof_b = proofs_cell~load_ref().begin_parse();  ;; G2: 96 bytes (768 bits)
+        slice proof_c = proofs_cell~load_ref().begin_parse();  ;; G1: 48 bytes (384 bits)
+
+        ;; Verify fee matches field element (prevent manipulation)
+        throw_if(error::invalid_fee, fee != fee_field);
+        throw_if(error::invalid_fee, fee > deposit_amount / 10);
+
+        ;; Verify root is known
+        throw_unless(error::unknown_root, is_known_root(root));
+
+        ;; Verify nullifier not spent
+        throw_if(error::nullifier_used, is_nullifier_spent(nullifier_hash));
+
+        ;; VERIFY THE ZK PROOF
+        int is_valid = verify_proof(root, nullifier_hash, recipient_field, relayer_field, fee_field,
+                                    proof_a, proof_b, proof_c);
+        throw_unless(error::verify_failed, is_valid);
+
+        ;; Mark nullifier as spent
+        nullifiers~udict_set(256, nullifier_hash, begin_cell().store_uint(1, 1).end_cell().begin_parse());
+
+        ;; IMPORTANT: Save state BEFORE sending messages (prevents reentrancy edge cases)
+        save_data();
+
+        ;; Emit withdraw event (external message for indexers)
+        send_raw_message(begin_cell()
+            .store_uint(3, 2)  ;; ext_out_msg_info$11
+            .store_uint(0, 2)  ;; addr_none src
+            .store_uint(0, 2)  ;; addr_none dest
+            .store_uint(0, 64 + 32)  ;; created_lt, created_at (filled by validator)
+            .store_uint(0, 1)  ;; no init
+            .store_uint(1, 1)  ;; body in ref
+            .store_ref(begin_cell()
+                .store_uint(event::withdraw, 32)
+                .store_uint(nullifier_hash, 256)
+                .store_slice(recipient_addr)
+                .store_coins(deposit_amount - fee)
+            .end_cell())
+        .end_cell(), 0);
+
+        ;; Send tokens to recipient
+        int amount_to_recipient = deposit_amount - fee;
+
+        cell transfer_body = begin_cell()
+            .store_uint(0x0f8a7ea5, 32)  ;; op::transfer
+            .store_uint(query_id, 64)
+            .store_coins(amount_to_recipient)
+            .store_slice(recipient_addr)
+            .store_slice(sender_address)
+            .store_uint(0, 1)
+            .store_coins(0)
+            .store_uint(0, 1)
+        .end_cell();
+
+        send_raw_message(begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(jetton_wallet)
+            .store_coins(50000000)
+            .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .store_ref(transfer_body)
+        .end_cell(), 1);
+
+        ;; Send fee to relayer if specified
+        if (fee > 0) {
+            cell fee_body = begin_cell()
+                .store_uint(0x0f8a7ea5, 32)
+                .store_uint(query_id, 64)
+                .store_coins(fee)
+                .store_slice(relayer_addr)
+                .store_slice(sender_address)
+                .store_uint(0, 1)
+                .store_coins(0)
+                .store_uint(0, 1)
+            .end_cell();
+
+            send_raw_message(begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(jetton_wallet)
+                .store_coins(50000000)
+                .store_uint(1, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .store_ref(fee_body)
+            .end_cell(), 1);
+        }
+
+        return ();
+    }
+
+    throw(0xffff);
+}
+
+;; ========== GET METHODS ==========
+
+int get_root() method_id {
+    load_data();
+    return current_root;
+}
+
+int get_next_index() method_id {
+    load_data();
+    return next_index;
+}
+
+int is_spent(int nullifier_hash) method_id {
+    load_data();
+    return is_nullifier_spent(nullifier_hash);
+}
+
+int is_root_known(int root) method_id {
+    load_data();
+    return is_known_root(root);
+}
+
+int get_commitment_index(int commitment) method_id {
+    load_data();
+    (slice cs, int found) = commitments.udict_get?(256, commitment);
+    if (found) {
+        return cs~load_uint(32);
+    }
+    return -1;
+}
+
+int get_deposit_amount() method_id {
+    load_data();
+    return deposit_amount;
+}
+
+slice get_jetton_wallet() method_id {
+    load_data();
+    return jetton_wallet;
+}
+
+slice get_admin() method_id {
+    load_data();
+    return admin_address;
+}
